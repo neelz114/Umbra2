@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Operations Tracking Spreadsheet</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.7.0/chart.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+        .setup-form, .forecast-update-form {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .setup-form label, .forecast-update-form label {
+            text-align: right;
+            padding-right: 10px;
+        }
+        .setup-form input, .setup-form select, .forecast-update-form input, .forecast-update-form select {
+            width: 100%;
+            padding: 5px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: center;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        .above-forecast {
+            background-color: #90EE90;
+        }
+        .below-forecast {
+            background-color: #FFA07A;
+        }
+        .chart-container {
+            width: 100%;
+            max-width: 800px;
+            margin: 20px auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Operations Tracking Spreadsheet</h1>
+        
+        <div class="setup-form">
+            <label for="shift-start">Shift Start Time:</label>
+            <input type="time" id="shift-start" required>
+            
+            <label for="shift-end">Shift End Time:</label>
+            <input type="time" id="shift-end" required>
+            
+            <label for="initial-forecast">Initial Forecast Volume:</label>
+            <input type="number" id="initial-forecast" min="0" required>
+            
+            <label for="production-lines">Number of Production Lines:</label>
+            <select id="production-lines" required>
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+            </select>
+        </div>
+        
+        <button onclick="generateSpreadsheet()">Generate Spreadsheet</button>
+        
+        <div id="spreadsheet-container"></div>
+        
+        <div class="forecast-update-form" style="display: none;">
+            <label for="update-hour">Select Hour:</label>
+            <select id="update-hour"></select>
+            
+            <label for="additional-volume">Additional Volume:</label>
+            <input type="number" id="additional-volume" min="0">
+            
+            <label for="additional-lines">Additional Production Lines:</label>
+            <input type="number" id="additional-lines" min="0" max="3">
+        </div>
+        
+        <button onclick="updateForecast()" style="display: none;">Update Forecast</button>
+        <button onclick="exportToPDF()" style="display: none;">Export to PDF</button>
+        
+        <div class="chart-container">
+            <canvas id="productionChart"></canvas>
+        </div>
+    </div>
+
+    <script>
+        let spreadsheetData = [];
+        let chart = null;
+
+        function generateSpreadsheet() {
+            const shiftStart = document.getElementById('shift-start').value;
+            const shiftEnd = document.getElementById('shift-end').value;
+            const initialForecast = parseInt(document.getElementById('initial-forecast').value);
+            const productionLines = parseInt(document.getElementById('production-lines').value);
+
+            if (!shiftStart || !shiftEnd || !initialForecast || !productionLines) {
+                alert('Please fill all the fields');
+                return;
+            }
+
+            const startHour = parseInt(shiftStart.split(':')[0]);
+            const endHour = parseInt(shiftEnd.split(':')[0]);
+            const hours = (endHour < startHour ? endHour + 24 : endHour) - startHour;
+            const forecastPerHour = Math.floor(initialForecast / hours);
+            const forecastPerLinePerHour = Math.floor(forecastPerHour / productionLines);
+
+            spreadsheetData = [];
+            for (let i = 0; i < hours; i++) {
+                const hourData = {
+                    hour: (startHour + i) % 24,
+                    forecast: Array(productionLines).fill(forecastPerLinePerHour),
+                    actual: Array(productionLines).fill(0)
+                };
+                spreadsheetData.push(hourData);
+            }
+
+            renderSpreadsheet();
+            renderChart();
+            document.querySelector('.forecast-update-form').style.display = 'grid';
+            document.querySelector('button[onclick="updateForecast()"]').style.display = 'inline-block';
+            document.querySelector('button[onclick="exportToPDF()"]').style.display = 'inline-block';
+
+            // Populate update hour dropdown
+            const updateHourSelect = document.getElementById('update-hour');
+            updateHourSelect.innerHTML = '';
+            spreadsheetData.forEach((data, index) => {
+                const option = document.createElement('option');
+                option.value = index;
+                option.textContent = `Hour ${data.hour}`;
+                updateHourSelect.appendChild(option);
+            });
+        }
+
+        function renderSpreadsheet() {
+            const container = document.getElementById('spreadsheet-container');
+            const productionLines = Math.max(...spreadsheetData.map(data => data.forecast.length));
+            
+            let html = '<table>';
+            html += '<tr><th>Hour</th>';
+            for (let i = 1; i <= productionLines; i++) {
+                html += `<th>Line ${i} Forecast</th><th>Line ${i} Actual</th>`;
+            }
+            html += '<th>Total Forecast</th><th>Total Actual</th></tr>';
+
+            spreadsheetData.forEach((data, index) => {
+                html += `<tr><td>${data.hour}:00</td>`;
+                for (let i = 0; i < productionLines; i++) {
+                    html += `<td>${data.forecast[i] || 0}</td>`;
+                    html += `<td><input type="number" min="0" value="${data.actual[i] || 0}" onchange="updateActual(${index}, ${i}, this.value)"></td>`;
+                }
+                const totalForecast = data.forecast.reduce((a, b) => a + b, 0);
+                const totalActual = data.actual.reduce((a, b) => a + b, 0);
+                html += `<td>${totalForecast}</td><td>${totalActual}</td></tr>`;
+            });
+
+            // Add totals row
+            const totalForecast = spreadsheetData.reduce((sum, data) => sum + data.forecast.reduce((a, b) => a + b, 0), 0);
+            const totalActual = spreadsheetData.reduce((sum, data) => sum + data.actual.reduce((a, b) => a + b, 0), 0);
+            html += '<tr><th>Totals</th>';
+            for (let i = 0; i < productionLines; i++) {
+                const lineTotalForecast = spreadsheetData.reduce((sum, data) => sum + (data.forecast[i] || 0), 0);
+                const lineTotalActual = spreadsheetData.reduce((sum, data) => sum + (data.actual[i] || 0), 0);
+                html += `<th>${lineTotalForecast}</th><th>${lineTotalActual}</th>`;
+            }
+            html += `<th>${totalForecast}</th><th>${totalActual}</th></tr>`;
+
+            html += '</table>';
+            container.innerHTML = html;
+            colorCells();
+        }
+
+        function updateActual(hour, line, value) {
+            spreadsheetData[hour].actual[line] = parseInt(value);
+            renderSpreadsheet();
+            renderChart();
+        }
+
+        function colorCells() {
+            const cells = document.querySelectorAll('td input');
+            cells.forEach(cell => {
+                const actual = parseInt(cell.value);
+                const forecast = parseInt(cell.parentElement.previousElementSibling.textContent);
+                if (actual > forecast) {
+                    cell.parentElement.classList.add('above-forecast');
+                    cell.parentElement.classList.remove('below-forecast');
+                } else if (actual < forecast) {
+                    cell.parentElement.classList.add('below-forecast');
+                    cell.parentElement.classList.remove('above-forecast');
+                } else {
+                    cell.parentElement.classList.remove('above-forecast', 'below-forecast');
+                }
+            });
+        }
+
+        function updateForecast() {
+            const hour = parseInt(document.getElementById('update-hour').value);
+            const additionalVolume = parseInt(document.getElementById('additional-volume').value) || 0;
+            const additionalLines = parseInt(document.getElementById('additional-lines').value) || 0;
+            const currentLines = spreadsheetData[hour].forecast.length;
+            const newLines = currentLines + additionalLines;
+            
+            if (newLines > 4) {
+                alert('Maximum 4 production lines allowed');
+                return;
+            }
+
+            // Calculate remaining forecast
+            let remainingForecast = additionalVolume;
+            for (let i = hour; i < spreadsheetData.length; i++) {
+                remainingForecast += spreadsheetData[i].forecast.reduce((a, b) => a + b, 0);
+            }
+
+            // Distribute remaining forecast
+            const remainingHours = spreadsheetData.length - hour;
+            const forecastPerHour = Math.floor(remainingForecast / remainingHours);
+            const forecastPerLinePerHour = Math.floor(forecastPerHour / newLines);
+
+            for (let i = hour; i < spreadsheetData.length; i++) {
+                spreadsheetData[i].forecast = Array(newLines).fill(forecastPerLinePerHour);
+                if (spreadsheetData[i].actual.length < newLines) {
+                    spreadsheetData[i].actual = spreadsheetData[i].actual.concat(Array(newLines - currentLines).fill(0));
+                }
+            }
+
+            renderSpreadsheet();
+            renderChart();
+        }
+
+        function renderChart() {
+            const ctx = document.getElementById('productionChart').getContext('2d');
+            const labels = spreadsheetData.map(data => `Hour ${data.hour}`);
+            const datasets = [];
+
+            // Actual production for each line
+            const maxLines = Math.max(...spreadsheetData.map(data => data.actual.length));
+            for (let i = 0; i < maxLines; i++) {
+                datasets.push({
+                    label: `Line ${i + 1} Actual`,
+                    data: spreadsheetData.map(data => data.actual[i] || 0),
+                    backgroundColor: `rgba(${Math.random() * 255}, ${Math.random() * 255}, ${Math.random() * 255}, 0.5)`,
+                    stack: 'actual'
+                });
+            }
+
+            // Total forecast
+            datasets.push({
+                label: 'Total Forecast',
+                data: spreadsheetData.map(data => data.forecast.reduce((a, b) => a + b, 0)),
+                type: 'line',
+                borderColor: 'rgb(75, 192, 192)',
+                tension: 0.1,
+                fill: false
+            });
+
+            if (chart) {
+                chart.destroy();
+            }
+
+            chart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        x: {
+                            stacked: true,
+                        },
+                        y: {
+                            stacked: true
+                        }
+                    },
+                    plugins: {
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false
+                        }
+                    }
+                }
+            });
+        }
+
+        function exportToPDF() {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+
+            // Add title
+            doc.setFontSize(18);
+            doc.text("Operations Tracking Spreadsheet", 14, 22);
+
+            // Add table
+            doc.setFontSize(10);
+            const table = document.querySelector('table');
+            doc.autoTable({ html: table, startY: 30 });
+
+            // Add chart
+            const chartImg = document.getElementById('productionChart').toDataURL('image/png');
+            const imgProps = doc.getImageProperties(chartImg);
+            const pdfWidth = doc.internal.pageSize.getWidth();
+            const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+            doc.addImage(chartImg, 'PNG', 0, doc.lastAutoTable.finalY + 10, pdfWidth, pdfHeight);
+
+            // Save the PDF
+            doc.save("operations_tracking_spreadsheet.pdf");
+        }
+    </script>
+</body>
+</html>
